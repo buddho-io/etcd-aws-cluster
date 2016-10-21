@@ -1,4 +1,5 @@
-#! /bin/bash
+#!/bin/bash
+
 # This script generate a /etcd/initial-cluster file from /etc/sysconfig/etcd-peers
 # and upload it to s3 which can be downloaded and used by other etcd proxies.
 #
