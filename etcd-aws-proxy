@@ -1,0 +1,57 @@
+#! /bin/bash
+# This script generate a /etcd/initial-cluster file from /etc/sysconfig/etcd-peers
+# and upload it to s3 which can be downloaded and used by other etcd proxies.
+#
+
+set -ex
+
+pkg="etcd-aws-proxy"
+version="0.5"
+etcd_peers_file_path="/etc/sysconfig/etcd-peers"
+etcd_initial_cluster_file_path="/etc/sysconfig/initial-cluster"
+
+# Get S3 bucket url. Either pass in as S3BUCKET (e.g. s3://my-coreos-cluster-clountinit)
+# or generate one from AWS account name: s3://${account}-coreos-cluster-cloudinit.
+# initial-cluster file will be uploaded as S3BUCKET/etcd/initial-cluster.
+account=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq --raw-output .accountId)
+if [[ ! $account ]]; then
+    echo "$pkg: failed to get the aws account id."
+    exit 4
+fi
+
+# We use pendingTime for creation time. no creation time in meta-data
+pendingTime=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq --raw-output .pendingTime)
+if [[ ! $pendingTime ]]; then
+    echo "$pkg: failed to get instance launch pendingTime."
+    exit 4
+fi
+
+discovery_bucket=${S3BUCKET:-"s3://${account}-coreos-cluster-cloudinit"}
+
+current_time=$(date -d$(date --utc  +"%FT%T") +%s)
+creation_time=$(date -d"$pendingTime" +%s)
+elapsedTime=$(($current_time - $creation_time))
+
+if [[ ! -f "$etcd_peers_file_path" ]]; then
+    echo "$pkg: $etcd_peers_file_path doesn't exist."
+    exit 4
+elif [ $elapsedTime -gt 3600 ]; then
+    echo "Not new member. Won't publish initial-cluster file."
+    exit 0
+fi
+# Newly lauched instace; publish ips
+if  etcd_initial_cluster=$(grep ETCD_INITIAL_CLUSTER= $etcd_peers_file_path) ;
+then
+    echo $etcd_initial_cluster > $etcd_initial_cluster_file_path
+else
+    echo "$pkg: $$etcd_peers_file_path doesn't have ETCD_INITIAL_CLUSTER."
+    exit 4
+fi
+
+region=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq --raw-output .region)
+if ! aws --region $region s3 ls $discovery_bucket > /dev/null 2>&1 ;
+then
+  aws --region $region s3 mb $discovery_bucket 
+fi
+aws --region $region s3 cp $etcd_initial_cluster_file_path $discovery_bucket/etcd/$(basename $etcd_initial_cluster_file_path)
+
